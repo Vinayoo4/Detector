@@ -1,0 +1,108 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="hero">
+    <h1>Is this website fake?</h1>
+    <p>Enter any domain or URL for a deep fake-website analysis report.</p>
+    <form id="analyze-form">
+        <input type="text" id="url-input" name="url" placeholder="https://example.com" required>
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <button type="submit" id="analyze-btn">Analyze</button>
+    </form>
+    <div id="error-box" class="hidden"></div>
+    <button id="install-pwa" class="hidden">Install App</button>
+</div>
+
+<div id="loading-state" class="hidden">
+    <div class="spinner"></div>
+    <p id="loading-text">Analyzing... fetching page, checking WHOIS, extracting signals</p>
+</div>
+
+<div id="result-section" class="hidden">
+    <div id="verdict-banner" class="banner">
+        <div class="score-container">
+            <span id="risk-score"></span> / 100
+        </div>
+        <div id="label-badge" class="badge"></div>
+        <p id="verdict-text"></p>
+    </div>
+
+    <div class="trust-meter card">
+        <h3>Trust Score: <span id="trust-score-val"></span> / 8</h3>
+        <div class="trust-bar-container">
+            <div id="trust-bar" class="trust-bar-fill"></div>
+        </div>
+        <ul id="trust-signals-list" class="signals-list"></ul>
+    </div>
+
+    <div class="deep-analysis card">
+        <details open>
+            <summary>What this site offers</summary>
+            <div class="details-content" id="offerings-content"></div>
+        </details>
+
+        <details>
+            <summary>Contact & Identity</summary>
+            <div class="details-content" id="identity-content"></div>
+        </details>
+
+        <details>
+            <summary>Risk Signals</summary>
+            <div class="details-content">
+                <ul id="risk-signals-list" class="signals-list"></ul>
+            </div>
+        </details>
+
+        <details>
+            <summary>Technical Details</summary>
+            <div class="details-content" id="technical-content"></div>
+        </details>
+
+        <details>
+            <summary>Domain Intelligence</summary>
+            <div class="details-content" id="domain-content"></div>
+        </details>
+    </div>
+
+    <div class="feedback-section card">
+        <h3>Was this analysis helpful?</h3>
+        <div class="feedback-buttons">
+            <button id="feedback-yes" class="btn-feedback">✓ Yes, satisfied</button>
+            <button id="feedback-no" class="btn-feedback">✗ Not satisfied</button>
+        </div>
+        <div id="feedback-form" class="hidden">
+            <input type="text" id="feedback-note" placeholder="What was wrong? (optional)">
+            <button id="feedback-submit">Submit Feedback</button>
+        </div>
+        <p id="feedback-thanks" class="hidden">Thank you for your feedback!</p>
+    </div>
+</div>
+
+<div class="recent-scans card">
+    <h3>Recent Scans</h3>
+    <table class="scans-table">
+        <thead>
+            <tr>
+                <th>Domain</th>
+                <th>Verdict</th>
+                <th>Score</th>
+                <th>Time</th>
+            </tr>
+        </thead>
+        <tbody id="recent-scans-list">
+            {% for row in recent %}
+            <tr data-url="{{ row.normalized_url }}">
+                <td>{{ row.domain }}</td>
+                <td><span class="pill pill-{{ row.label }}">{{ row.label|upper }}</span></td>
+                <td>{{ row.risk_score }}</td>
+                <td>{{ row.created_at.strftime('%Y-%m-%d %H:%M') }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+
+<template id="analysis-template">
+    <!-- Used by JS for dynamically inserting recent scans from storage -->
+</template>
+{% endblock %}

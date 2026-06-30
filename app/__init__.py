@@ -1,175 +1,45 @@
 from __future__ import annotations
-
 import os
-import time
 from pathlib import Path
-
-from flask import Flask, g, jsonify, render_template, request
-from werkzeug.security import generate_password_hash
-
-from .admin import bp as admin_bp
-from .config import CONFIG_MAP, BaseConfig
-from .extensions import (
-    configure_redis,
-    csrf,
-    db,
-    error_buffer,
-    limiter,
-    login_manager,
-    migrate,
-    record_error,
-    redis_client,
-    runtime_state,
-)
-from .models import RequestLog, User
+from flask import Flask, jsonify, render_template, request
+from .config import BaseConfig
+from .extensions import db, csrf, limiter
 from .phishing import bp as phishing_bp
 from .security import configure_logging, configure_security
 
-
-def create_app(config_class: type[BaseConfig] | None = None):
+def create_app():
     app = Flask(__name__)
-    config_source = config_class or CONFIG_MAP.get(
-        os.getenv("FLASK_ENV", "development"),
-        CONFIG_MAP["development"],
-    )
-    app.config.from_object(config_source)
+    app.config.from_object(BaseConfig)
     Path(app.instance_path).mkdir(parents=True, exist_ok=True)
-
     db.init_app(app)
     csrf.init_app(app)
     limiter.init_app(app)
-    login_manager.init_app(app)
-    migrate.init_app(app, db)
-    configure_redis(app.config["REDIS_URL"])
     configure_logging(app)
     configure_security(app)
-
-
-    login_manager.login_view = "admin.login"
-    login_manager.login_message_category = "warning"
-
-    @login_manager.user_loader
-    def load_user(user_id: str):
-        return db.session.get(User, int(user_id))
-
     app.register_blueprint(phishing_bp)
-    app.register_blueprint(admin_bp)
 
     with app.app_context():
-        _validate_runtime_config(app)
-        # db.create_all()
-        # _sync_admin_user(app)
-        runtime_state.model_loaded = bool(app.config["MODEL_PATH"])
+        db.create_all()  # auto-create tables for local dev
 
     @app.context_processor
-    def inject_shell_context():
-        return {"app_name": "Detector PWA"}
+    def inject_globals():
+        return {"app_name": "Detector"}
 
     @app.errorhandler(404)
-    def not_found(_error):
-        return render_template("errors/404.html", page_title="Page not found"), 404
+    def not_found(_e):
+        return render_template("errors/404.html", page_title="Not found"), 404
 
     @app.errorhandler(500)
-    def server_error(error):
-        record_error(str(error), path=request.path, error_type="server_error")
-        return render_template("errors/500.html", page_title="Server error"), 500
-
-    @app.errorhandler(503)
-    def unavailable(_error):
-        return render_template("errors/503.html", page_title="Unavailable"), 503
+    def server_error(e):
+        return render_template("errors/500.html", page_title="Error"), 500
 
     @app.route("/health")
     def health():
-        health_data = gather_health_snapshot()
-        status_code = 200 if health_data["db"] == "ok" and health_data["redis"] == "ok" else 503
-        return jsonify(health_data), status_code
-
-    @app.route("/metrics")
-    def metrics():
-        from .models import Analysis
-
-        total = Analysis.query.count()
-        safe = Analysis.query.filter_by(label="safe").count()
-        suspicious = Analysis.query.filter_by(label="suspicious").count()
-        phishing = Analysis.query.filter_by(label="phishing").count()
-        avg_latency = db.session.query(db.func.avg(Analysis.latency_ms)).scalar() or 0
-        body = [
-            f"detector_total_analyses {total}",
-            f"detector_safe_analyses {safe}",
-            f"detector_suspicious_analyses {suspicious}",
-            f"detector_phishing_analyses {phishing}",
-            f"detector_avg_latency_ms {avg_latency:.2f}",
-        ]
-        return "\n".join(body) + "\n", 200, {"Content-Type": "text/plain; version=0.0.4"}
-
-    @app.after_request
-    def store_request_log(response):
         try:
-            duration_ms = int(
-                (time.perf_counter() - getattr(g, "started_at", time.perf_counter()))
-                * 1000
-            )
-            db.session.add(
-                RequestLog(
-                    method=request.method,
-                    path=request.path,
-                    status_code=response.status_code,
-                    duration_ms=duration_ms,
-                )
-            )
-            db.session.commit()
-        except Exception as exc:
-            app.logger.warning(
-                "request_log_failed",
-                extra={"path": request.path, "method": request.method},
-            )
-            record_error(
-                str(exc),
-                path=request.path,
-                error_type="request_log_failed",
-            )
-            db.session.rollback()
-        return response
+            db.session.execute(db.text("SELECT 1"))
+            db_ok = True
+        except Exception:
+            db_ok = False
+        return jsonify({"status": "ok" if db_ok else "degraded", "database": db_ok})
 
     return app
-
-
-def _sync_admin_user(app: Flask) -> None:
-    password_hash = app.config["ADMIN_PASSWORD_HASH"] or generate_password_hash(app.config["ADMIN_PASSWORD"])
-    User.sync_admin_user(app.config["ADMIN_USERNAME"], password_hash)
-
-
-def _validate_runtime_config(app: Flask) -> None:
-    if not (app.config["ADMIN_PASSWORD_HASH"] or app.config["ADMIN_PASSWORD"]):
-        raise RuntimeError("ADMIN_PASSWORD_HASH or ADMIN_PASSWORD must be set.")
-
-
-def gather_health_snapshot() -> dict:
-    from .models import Analysis
-    from app.celery_app import celery
-
-    try:
-        db.session.execute(db.text("SELECT 1"))
-        db_ok = "ok"
-    except Exception:
-        db_ok = "fail"
-
-    try:
-        redis_ok = "ok" if redis_client.ping() else "fail"
-    except Exception:
-        redis_ok = "fail"
-
-    try:
-        inspector = celery.control.inspect()
-        active = inspector.active()
-        celery_worker = "ok" if active else "unreachable"
-    except Exception:
-        celery_worker = "unreachable"
-
-    return {
-        "db": db_ok,
-        "redis": redis_ok,
-        "model_loaded": runtime_state.model_loaded,
-        "celery_worker": celery_worker,
-        "version": "1.0.0"
-    }

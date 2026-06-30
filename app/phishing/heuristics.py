@@ -1,19 +1,17 @@
 from __future__ import annotations
 
-import hashlib
 import ipaddress
 import socket
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 from urllib.parse import urlparse
-
+import concurrent.futures
 import whois
 
 SHORTENERS = {"bit.ly", "tinyurl.com", "t.co", "goo.gl", "is.gd", "ow.ly"}
-SUSPICIOUS_KEYWORDS = {"login", "verify", "secure", "bank", "update", "confirm", "account", "password"}
-PHISHING_TLDS = {".xyz", ".top", ".club", ".info", ".work", ".click"}
-
+SUSPICIOUS_KEYWORDS = {"login", "verify", "secure", "bank", "update", "confirm", "account", "password", "paypal", "signin", "wallet", "auth"}
+PHISHING_TLDS = {".xyz", ".top", ".club", ".info", ".work", ".click", ".pw", ".gq", ".tk"}
 
 class AnalysisInputError(ValueError):
     def __init__(self, message: str):
@@ -21,16 +19,13 @@ class AnalysisInputError(ValueError):
         self.message = message
         self.error_type = "invalid_url"
 
-
 @dataclass
 class ReachabilityError(Exception):
     message: str
     error_type: str
 
-
 def sanitize_url(raw_url: str) -> str:
     return (raw_url or "").strip().replace("\x00", "")
-
 
 def normalize_url(raw_url: str) -> str:
     cleaned = sanitize_url(raw_url)
@@ -50,15 +45,9 @@ def normalize_url(raw_url: str) -> str:
         raise AnalysisInputError("URL domain is invalid") from exc
     return parsed.geturl()
 
-
-def url_hash(value: str) -> str:
-    return hashlib.sha256(value.encode("utf-8")).hexdigest()
-
-
 def sanitized_domain(value: str) -> str:
     parsed = urlparse(normalize_url(value))
     return (parsed.hostname or "").strip(".").lower().encode("idna").decode("ascii")
-
 
 def _is_public_host(host: str | None) -> bool:
     if not host:
@@ -74,7 +63,6 @@ def _is_public_host(host: str | None) -> bool:
         except socket.gaierror:
             return True
 
-
 def validate_url(raw_url: str) -> tuple[bool, str]:
     try:
         normalized = normalize_url(raw_url)
@@ -84,11 +72,9 @@ def validate_url(raw_url: str) -> tuple[bool, str]:
         return False, "URL points to a private or local network address"
     return True, ""
 
-
 def extract_url_features(url: str) -> tuple[dict[str, float], list[str]]:
     parsed = urlparse(url)
     host = parsed.hostname or ""
-    path = parsed.path or ""
     reasons: list[str] = []
     subdomain_count = max(host.count(".") - 1, 0)
 
@@ -127,79 +113,55 @@ def extract_url_features(url: str) -> tuple[dict[str, float], list[str]]:
         "url_length": float(len(url)),
         "subdomain_count": float(subdomain_count),
         "has_ip": has_ip,
-        "suspicious_chars": float(suspicious_char_count),
+        "suspicious_chars": min(float(suspicious_char_count), 6.0), # cap at 12 (+2 each) will be handled in score
         "keyword_hits": float(len(keyword_matches)),
         "is_shortener": is_shortener,
         "phishing_tld": phishing_tld,
         "uses_https": uses_https,
-        "path_length": float(len(path)),
     }
     return features, reasons
 
+def _fetch_whois(host: str) -> dict[str, Any]:
+    try:
+        return whois.whois(host)
+    except Exception:
+        return None
 
 def get_domain_intelligence(
     host: str,
-    cache_get,
-    cache_set,
-    ttl_seconds: int,
-    *,
     new_domain_days: int,
     young_domain_days: int,
 ) -> tuple[dict[str, Any], list[str]]:
-    cache_key = f"domain-intel:{host}"
-    cached = cache_get(cache_key)
-    if cached:
-        return cached["info"], cached["reasons"]
-
-    info: dict[str, Any] = {"domain": host, "domain_age_days": 0, "registrar": "unknown"}
+    info: dict[str, Any] = {"domain": host, "domain_age_days": 0, "registrar": "unknown", "registration_date": None}
     reasons: list[str] = []
-    try:
-        data = whois.whois(host)
-        creation = data.creation_date
-        if isinstance(creation, list):
-            creation = creation[0]
-        if isinstance(creation, datetime):
-            creation_utc = (
-                creation.astimezone(timezone.utc) if creation.tzinfo else creation.replace(tzinfo=timezone.utc)
-            )
-            age_days = max((datetime.now(timezone.utc) - creation_utc).days, 0)
-            info["domain_age_days"] = age_days
-            if age_days < new_domain_days:
-                reasons.append(f"Domain registered less than {new_domain_days} days ago")
-            elif age_days < young_domain_days:
-                reasons.append(f"Domain registered less than {young_domain_days} days ago")
-        registrar = getattr(data, "registrar", None)
-        if registrar:
-            info["registrar"] = str(registrar)
-    except Exception:
-        reasons.append("WHOIS lookup unavailable")
 
-    try:
-        import dns.resolver
-        txt_records = []
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(_fetch_whois, host)
         try:
-            answers = dns.resolver.resolve(host, 'TXT', lifetime=2.0)
-            for rdata in answers:
-                txt_records.append(rdata.to_text())
+            data = future.result(timeout=8.0)
+            if data:
+                creation = data.creation_date
+                if isinstance(creation, list):
+                    creation = creation[0]
+                if isinstance(creation, datetime):
+                    info["registration_date"] = creation.isoformat()
+                    creation_utc = (
+                        creation.astimezone(timezone.utc) if creation.tzinfo else creation.replace(tzinfo=timezone.utc)
+                    )
+                    age_days = max((datetime.now(timezone.utc) - creation_utc).days, 0)
+                    info["domain_age_days"] = age_days
+                    if age_days < new_domain_days:
+                        reasons.append(f"Domain registered less than {new_domain_days} days ago")
+                    elif age_days < young_domain_days:
+                        reasons.append(f"Domain registered less than {young_domain_days} days ago")
+                registrar = getattr(data, "registrar", None)
+                if registrar:
+                    info["registrar"] = str(registrar)
+            else:
+                reasons.append("WHOIS lookup unavailable")
+        except concurrent.futures.TimeoutError:
+            reasons.append("WHOIS lookup unavailable (timeout)")
         except Exception:
-            pass
+            reasons.append("WHOIS lookup unavailable")
 
-        has_spf = any("v=spf1" in txt for txt in txt_records)
-        info["has_spf"] = has_spf
-
-        dmarc_host = "_dmarc." + host
-        has_dmarc = False
-        try:
-            dmarc_answers = dns.resolver.resolve(dmarc_host, 'TXT', lifetime=2.0)
-            for rdata in dmarc_answers:
-                if "v=DMARC1" in rdata.to_text():
-                    has_dmarc = True
-                    break
-        except Exception:
-            pass
-        info["has_dmarc"] = has_dmarc
-    except ImportError:
-        pass
-
-    cache_set(cache_key, {"info": info, "reasons": reasons}, ttl_seconds)
     return info, reasons

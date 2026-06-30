@@ -1,570 +1,302 @@
-const storageKey = 'detector-recent-results';
-let deferredInstallPrompt = null;
+document.addEventListener("DOMContentLoaded", () => {
+    const form = document.getElementById("analyze-form");
+    const urlInput = document.getElementById("url-input");
+    const analyzeBtn = document.getElementById("analyze-btn");
+    const errorBox = document.getElementById("error-box");
+    const loadingState = document.getElementById("loading-state");
+    const resultSection = document.getElementById("result-section");
+    const recentScansList = document.getElementById("recent-scans-list");
 
-function escapeHtml(value) {
-  return String(value)
-    .replaceAll('&', '&amp;')
-    .replaceAll('<', '&lt;')
-    .replaceAll('>', '&gt;')
-    .replaceAll('\"', '&quot;')
-    .replaceAll(\"'\", '&#39;');
-}
+    const themeToggle = document.getElementById("theme-toggle");
 
-function safeLabel(value) {
-  return ['safe', 'suspicious', 'phishing'].includes(value) ? value : 'safe';
-}
+    // Theme setup
+    const savedTheme = localStorage.getItem("theme") || "dark";
+    document.documentElement.setAttribute("data-theme", savedTheme);
+    themeToggle.addEventListener("click", () => {
+        const currentTheme = document.documentElement.getAttribute("data-theme");
+        const newTheme = currentTheme === "dark" ? "light" : "dark";
+        document.documentElement.setAttribute("data-theme", newTheme);
+        localStorage.setItem("theme", newTheme);
+    });
 
-function getCsrfToken() {
-  return window._csrfToken || '';
-}
-
-function readRecentResults() {
-  try {
-    return JSON.parse(localStorage.getItem(storageKey) || '[]');
-  } catch {
-    return [];
-  }
-}
-
-function writeRecentResults(items) {
-  localStorage.setItem(storageKey, JSON.stringify(items.slice(0, 10)));
-}
-
-function loadRecentSidebar() {
-  const container = document.getElementById('recent-results');
-  if (!container) return;
-  const items = readRecentResults();
-  container.innerHTML = items.map((item) => {
-    const label = safeLabel(item.label);
-    return `<a class="recent-item" href="/result/${escapeHtml(item.analysis_id)}" data-route><span class="pill pill-${label}">${escapeHtml(label)}</span><strong>${escapeHtml(item.domain)}</strong><small>${escapeHtml(item.url)}</small></a>`;
-  }).join('') || '<p class="muted">No recent analysis.</p>';
-}
-
-function renderResult(target, result) {
-  const label = safeLabel(result.label);
-  const reasons = (result.reasons || [])
-    .map((reason) => `<li>${escapeHtml(reason)}</li>`)
-    .join('');
-  target.innerHTML = `
-    <div class="pill pill-${label}">${escapeHtml(result.risk_score)}/100 · ${escapeHtml(label)}</div>
-    <p><strong>${escapeHtml(result.domain)}</strong></p>
-    <p class="muted">${escapeHtml(result.url)}</p>
-    <p>Reachability: ${result.reachability.replaceAll('_', ' ')}</p>
-    <ul class="bullet-list">${reasons}</ul>
-    <a class="ghost-button" href="/result/${escapeHtml(result.analysis_id)}" data-route>Open details</a>
-  `;
-}
-
-function prependRecentResult(result) {
-  const items = [result, ...readRecentResults().filter((item) => item.url !== result.url)];
-  writeRecentResults(items);
-  loadRecentSidebar();
-}
-
-async function registerServiceWorker() {
-  if (!('serviceWorker' in navigator)) return;
-  try {
-    const registration = await navigator.serviceWorker.register('/sw.js');
-    // Notification setup can go here
-  } catch (error) {
-    console.error('Failed to register service worker', error);
-  }
-}
-
-function setupThemeToggle() {
-  const toggle = document.getElementById('theme-toggle');
-  const saved = localStorage.getItem('detector-theme') || 'dark';
-  document.documentElement.dataset.theme = saved;
-  if (!toggle) return;
-  // Clear old listeners by cloning if necessary, but it's only called once per app load now
-  toggle.addEventListener('click', () => {
-    const next = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark';
-    document.documentElement.dataset.theme = next;
-    localStorage.setItem('detector-theme', next);
-  });
-}
-
-function flashMessage(msg, type='error') {
-  const stack = document.getElementById('flash-stack');
-  stack.innerHTML = `<div class="flash flash-${type}">${escapeHtml(msg)}</div>`;
-  stack.style.display = 'block';
-  setTimeout(() => { stack.style.display = 'none'; }, 5000);
-}
-
-// --- Routing ---
-const routes = {
-  '/': viewIndex,
-  '/result/:id': viewResult,
-  '/disclaimer': viewSimple('Disclaimer', '<p>This tool is for educational purposes...</p>'),
-  '/privacy': viewSimple('Privacy Policy', '<p>We store hashed URLs...</p>'),
-  '/terms': viewSimple('Terms of Service', '<p>Do not use this tool for malicious purposes...</p>'),
-  '/offline': viewOffline,
-  '/admin': viewAdmin
-};
-
-
-function router() {
-  if (window._statsInterval) {
-      clearInterval(window._statsInterval);
-      window._statsInterval = null;
-  }
-  const path = window.location.pathname;
-  console.log("Routing to: ", path);
-  const appView = document.getElementById('app-view');
-  appView.innerHTML = ''; // Clear current
-
-  let matched = false;
-  for (const [route, handler] of Object.entries(routes)) {
-    if (route.includes(':')) {
-      const base = route.split(':')[0];
-      if (path.startsWith(base)) {
-        const id = path.slice(base.length);
-        if (id) {
-          handler(id);
-          matched = true;
-          break;
-        }
-      }
-    } else if (path === route) {
-      handler();
-      matched = true;
-      break;
+    function escapeHtml(unsafe) {
+        if (unsafe == null) return "";
+        return unsafe
+            .toString()
+            .replace(/&/g, "&amp;")
+            .replace(/</g, "&lt;")
+            .replace(/>/g, "&gt;")
+            .replace(/"/g, "&quot;")
+            .replace(/'/g, "&#039;");
     }
-  }
 
-  if (!matched) {
-    console.log("Route not matched!");
-    appView.innerHTML = '<div class="hero"><h1>404 Not Found</h1><p>The page you requested could not be found.</p></div>';
-  }
-}
+    function renderResult(data) {
+        // Hide loading, show result
+        loadingState.classList.add("hidden");
+        resultSection.classList.remove("hidden");
 
-function viewIndex() {
-  loadTemplate('view-index');
-  loadRecentSidebar();
+        // Banner
+        const banner = document.getElementById("verdict-banner");
+        banner.className = `banner ${data.label}`;
+        document.getElementById("risk-score").textContent = data.risk_score;
+        document.getElementById("label-badge").textContent = data.label;
+        document.getElementById("verdict-text").textContent = escapeHtml(data.verdict_text);
 
-  const form = document.getElementById('analyze-form');
-  const resultContent = document.getElementById('result-content');
-  const errorBox = document.getElementById('analysis-error');
+        // Trust Meter
+        document.getElementById("trust-score-val").textContent = data.trust_score;
+        const width = (data.trust_score / 8) * 100;
+        document.getElementById("trust-bar").style.width = `${width}%`;
 
-  if (form) {
-    form.addEventListener('submit', async (event) => {
-      event.preventDefault();
-      errorBox.classList.add('hidden');
-      const formData = new FormData(form);
-      const url = String(formData.get('url') || '').trim();
-
-      try {
-        resultContent.innerHTML = '<div class="spinner"></div><p>Queueing analysis...</p>';
-        const response = await fetch('/api/analyze', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'X-CSRFToken': getCsrfToken() },
-          body: JSON.stringify({ url }),
+        const trustList = document.getElementById("trust-signals-list");
+        trustList.innerHTML = "";
+        (data.trust_signals || []).forEach(sig => {
+            const li = document.createElement("li");
+            li.className = "trust-signal";
+            li.innerHTML = escapeHtml(sig);
+            trustList.appendChild(li);
         });
-        const payload = await response.json();
-        if (!response.ok) {
-          throw new Error(payload.error?.message || 'Unable to queue URL.');
-        }
 
-        if (payload.status === "queued" && payload.job_id) {
-            resultContent.innerHTML = '<div class="spinner"></div><p>Analyzing in progress...</p>';
-            let attempts = 0;
-            const pollInterval = setInterval(async () => {
-                attempts++;
-                if (attempts > 60) { // 2 mins max
-                    clearInterval(pollInterval);
-                    errorBox.textContent = 'Analysis timed out.';
-                    errorBox.classList.remove('hidden');
-                    resultContent.innerHTML = '<p class="muted">Enter a URL above to begin.</p>';
-                    return;
-                }
+        // Deep Analysis - Offerings
+        const deep = data.deep_analysis || {};
+        let offeringsHtml = `<p><strong>Page Title:</strong> ${escapeHtml(deep.page_title)}</p>`;
+        offeringsHtml += `<p><strong>Meta Description:</strong> ${escapeHtml(deep.meta_description)}</p>`;
 
-                try {
-                    const statusRes = await fetch(`/api/status/${payload.job_id}`);
-                    if (statusRes.ok) {
-                        const statusData = await statusRes.json();
-                        if (statusData.status === "completed") {
-                            clearInterval(pollInterval);
-                            renderResult(resultContent, statusData);
-                            prependRecentResult(statusData);
-
-                            const detailLink = resultContent.querySelector('a');
-                            if (detailLink) {
-                              detailLink.addEventListener('click', e => {
-                                e.preventDefault();
-                                window.history.pushState({}, '', detailLink.href);
-                                router();
-                              });
-                            }
-                        } else if (statusData.status === "failed") {
-                            clearInterval(pollInterval);
-                            throw new Error(statusData.error || 'Analysis failed.');
-                        }
-                    } else if (statusRes.status >= 400) {
-                         const errData = await statusRes.json();
-                         clearInterval(pollInterval);
-                         throw new Error(errData.error || 'Analysis failed.');
-                    }
-                } catch (pollErr) {
-                    clearInterval(pollInterval);
-                    errorBox.textContent = pollErr.message;
-                    errorBox.classList.remove('hidden');
-                    resultContent.innerHTML = '<p class="muted">Enter a URL above to begin.</p>';
-                }
-            }, 2000);
-        } else {
-            renderResult(resultContent, payload);
-            prependRecentResult(payload);
-            const detailLink = resultContent.querySelector('a');
-            if (detailLink) {
-              detailLink.addEventListener('click', e => {
-                e.preventDefault();
-                window.history.pushState({}, '', detailLink.href);
-                router();
-              });
+        if (deep.headings) {
+            if (deep.headings.h1 && deep.headings.h1.length) {
+                offeringsHtml += `<p><strong>H1 Headings:</strong> ${escapeHtml(deep.headings.h1.join(" | "))}</p>`;
+            }
+            if (deep.headings.h2 && deep.headings.h2.length) {
+                offeringsHtml += `<p><strong>H2 Headings:</strong> ${escapeHtml(deep.headings.h2.join(" | "))}</p>`;
             }
         }
-      } catch (error) {
-        errorBox.textContent = error.message;
-        errorBox.classList.remove('hidden');
-        resultContent.innerHTML = '<p class="muted">Enter a URL above to begin.</p>';
-      }
-    });
-  }
-}
 
-async function viewResult(id) {
-  loadTemplate('view-result');
-  const content = document.getElementById('result-detail-content');
-  const form = document.getElementById('feedback-form');
-
-  try {
-    const res = await fetch(`/api/result/${id}`);
-    if (!res.ok) throw new Error('Result not found');
-    const result = await res.json();
-
-    const label = safeLabel(result.label);
-    const reasons = (result.reasons || []).map(r => `<li>${escapeHtml(r)}</li>`).join('');
-    const redirectChain = (result.redirect_chain || []).map(url => `<li><code>${escapeHtml(url)}</code></li>`).join('');
-
-    content.innerHTML = `
-      <div class="card">
-        <h2 class="h2"><span class="pill pill-${label}">${escapeHtml(label)}</span> ${escapeHtml(result.domain)}</h2>
-        <p class="muted" style="margin-bottom:1.5rem;word-break:break-all;">${escapeHtml(result.url)}</p>
-        <div class="split-layout">
-          <div>
-            <h3>Risk score</h3>
-            <div class="big-score ${label === 'safe' ? 'success' : (label === 'suspicious' ? 'warning' : 'danger')}">${result.risk_score}<span>/100</span></div>
-          </div>
-          <div>
-            <h3>Details</h3>
-            <p><strong>Reachability:</strong> ${result.reachability.replaceAll('_', ' ')}</p>
-            <p><strong>Status code:</strong> ${result.status_code || 'N/A'}</p>
-          </div>
-        </div>
-        <h3 style="margin-top:2rem;">Reasons</h3>
-        <ul class="bullet-list">${reasons || '<li>None</li>'}</ul>
-        <h3 style="margin-top:2rem;">Redirect chain</h3>
-        <ol class="bullet-list" style="list-style-type:decimal;">${redirectChain}</ol>
-      </div>
-    `;
-
-        if (form) {
-      document.getElementById('feedback-analysis-id').value = id;
-      form.addEventListener('submit', async (e) => {
-        e.preventDefault();
-        const fd = new FormData(form);
-        const payload = {
-           analysis_id: fd.get('analysis_id'),
-           correct_label: fd.get('correct_label'),
-           user_label: 'user'
-        };
-        const feedbackRes = await fetch('/api/feedback', {
-           method: 'POST',
-           headers: { 'Content-Type': 'application/json', 'X-CSRFToken': getCsrfToken() },
-           body: JSON.stringify(payload)
-        });
-        if (feedbackRes.ok) form.innerHTML = '<p class="helper">Feedback recorded for future tuning.</p>';
-      });
-    }
-  } catch (err) {
-    content.innerHTML = '<p class="muted">Error loading result.</p>';
-  }
-}
-
-function viewSimple(title, bodyHtml) {
-  return () => {
-    loadTemplate('view-simple');
-    document.getElementById('simple-title').textContent = title;
-    document.getElementById('simple-content').innerHTML = bodyHtml;
-  };
-}
-
-function viewOffline() {
-  loadTemplate('view-simple');
-  document.getElementById('simple-title').textContent = 'Offline';
-
-  const items = readRecentResults();
-  const list = items.map((item) => {
-    const label = safeLabel(item.label);
-    return `<a class="recent-item" href="/result/${escapeHtml(item.analysis_id)}"><span class="pill pill-${label}">${escapeHtml(label)}</span><strong>${escapeHtml(item.domain)}</strong><small>${escapeHtml(item.url)}</small></a>`;
-  }).join('') || '<p class="muted">No cached results yet.</p>';
-
-  document.getElementById('simple-content').innerHTML = `
-    <p>You are currently offline. Here are your recent cached results:</p>
-    <div class="recent-list" style="margin-top:1rem;">${list}</div>
-    <button id="retry-online" class="button" style="margin-top:2rem;">Retry connection</button>
-  `;
-
-  document.getElementById('retry-online')?.addEventListener('click', () => {
-    window.location.reload();
-  });
-}
-
-
-async function viewAdmin() {
-  document.getElementById('app-view').innerHTML = ''; loadTemplate('view-admin-dashboard'); // Try loading dashboard first
-  const contentNode = document.getElementById('admin-health-content');
-  if (!contentNode) {
-    // If we can't find it, we might have loaded the wrong template somehow, but let's just proceed
-  }
-
-  try {
-    const res = await fetch('/api/admin/dashboard');
-    if (res.status === 401) {
-      // Not logged in, show login form
-      showAdminLogin();
-      return;
-    }
-    if (!res.ok) throw new Error('Failed to load dashboard');
-
-    const data = await res.json();
-    renderAdminDashboard(data);
-  } catch (err) {
-    flashMessage(err.message);
-    showAdminLogin();
-  }
-}
-
-function showAdminLogin() {
-  const appView = document.getElementById('app-view');
-  appView.innerHTML = '';
-  loadTemplate('view-admin-login');
-
-  const form = document.getElementById('admin-login-form');
-  const errorBox = document.getElementById('login-error');
-
-  if (form) {
-    form.addEventListener('submit', async (e) => {
-      e.preventDefault();
-      errorBox.classList.add('hidden');
-      const formData = new FormData(form);
-      const username = formData.get('username');
-      const password = formData.get('password');
-
-      try {
-        const res = await fetch('/api/admin/login', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'X-CSRFToken': window._csrfToken },
-          body: JSON.stringify({ username, password })
-        });
-
-        const data = await res.json();
-        if (res.ok && (data.status === 'success' || data.status === 'already_authenticated')) {
-          viewAdmin();
-        } else {
-          throw new Error(data.error || 'Login failed');
+        if (deep.nav_links && deep.nav_links.length) {
+            offeringsHtml += `<p><strong>Navigation:</strong></p><ul>`;
+            deep.nav_links.forEach(link => {
+                offeringsHtml += `<li>${escapeHtml(link.text)} (${escapeHtml(link.href)})</li>`;
+            });
+            offeringsHtml += `</ul>`;
         }
-      } catch (err) {
-        errorBox.textContent = err.message;
-        errorBox.classList.remove('hidden');
-      }
-    });
-  }
-}
+        document.getElementById("offerings-content").innerHTML = offeringsHtml;
 
-function renderAdminDashboard(data) {
-  // Bind Logout
-  document.getElementById('admin-logout-btn')?.addEventListener('click', async () => {
-    await fetch('/api/admin/logout', { method: 'POST', headers: { 'X-CSRFToken': window._csrfToken } });
-    viewIndex();
-    window.history.pushState({}, '', '/');
-  });
+        // Identity
+        let identityHtml = "";
+        const contact = deep.contact_info || {};
+        identityHtml += `<p><strong>Email:</strong> ${escapeHtml(contact.email) || "Not found"}</p>`;
+        identityHtml += `<p><strong>Phone:</strong> ${escapeHtml(contact.phone) || "Not found"}</p>`;
+        identityHtml += `<p><strong>Address:</strong> ${escapeHtml(contact.address) || "Not found"}</p>`;
 
-  // Health
-  const healthDiv = document.getElementById('admin-health-content');
-  if (healthDiv) {
-    fetch('/api/admin/health')
-      .then(res => res.json())
-      .then(health => {
-        healthDiv.innerHTML = `
-          <p><strong>Status:</strong> ${escapeHtml(health.status)}</p>
-          <p><strong>Database:</strong> ${health.database ? 'OK' : 'Error'}</p>
-          <p><strong>Redis:</strong> ${health.redis ? 'OK' : 'Error'}</p>
-          <p><strong>Model Loaded:</strong> ${health.model_loaded ? 'Yes' : 'No'}</p>
-        `;
-      });
-  }
+        const social = deep.social_links || {};
+        identityHtml += `<p><strong>Social Media:</strong> `;
+        const activeSocials = Object.entries(social).filter(([k,v]) => v).map(([k,v]) => `<a href="${escapeHtml(v)}" target="_blank">${escapeHtml(k)}</a>`);
+        identityHtml += activeSocials.length ? activeSocials.join(" | ") : "Not present";
+        identityHtml += `</p>`;
 
-// Stats
-  const statsDiv = document.getElementById('admin-stats-content');
-  if (statsDiv) {
-    statsDiv.innerHTML = `
-      <p><strong>Total Analyses:</strong> <span id="stat-total">${data.total}</span></p>
-      <p><strong>Safe:</strong> <span id="stat-safe">${data.counts?.safe || 0}</span></p>
-      <p><strong>Suspicious:</strong> <span id="stat-suspicious">${data.counts?.suspicious || 0}</span></p>
-      <p><strong>Phishing:</strong> <span id="stat-phishing">${data.counts?.phishing || 0}</span> (<span id="stat-pct">${data.phishing_pct}</span>%)</p>
-    `;
+        identityHtml += `<ul>`;
+        identityHtml += `<li>About page: ${deep.has_about_page ? "✓" : "✗"}</li>`;
+        identityHtml += `<li>Privacy policy: ${deep.has_privacy_policy ? "✓" : "✗"}</li>`;
+        identityHtml += `<li>Terms of service: ${deep.has_terms_page ? "✓" : "✗"}</li>`;
+        identityHtml += `</ul>`;
+        document.getElementById("identity-content").innerHTML = identityHtml;
 
-    // Auto refresh stats
-    if (!window._statsInterval) {
-        window._statsInterval = setInterval(async () => {
-           if (document.getElementById('admin-stats-content')) {
-               try {
-                   const res = await fetch('/api/admin/stats');
-                   if (res.ok) {
-                       const d = await res.json();
-                       document.getElementById('stat-total').textContent = d.total;
-                       document.getElementById('stat-safe').textContent = d.counts?.safe || 0;
-                       document.getElementById('stat-suspicious').textContent = d.counts?.suspicious || 0;
-                       document.getElementById('stat-phishing').textContent = d.counts?.phishing || 0;
-                       document.getElementById('stat-pct').textContent = d.phishing_pct;
-                   }
-               } catch (e) {}
-           } else {
-               clearInterval(window._statsInterval);
-               window._statsInterval = null;
-           }
-        }, 30000);
+        // Risk Signals
+        const riskList = document.getElementById("risk-signals-list");
+        riskList.innerHTML = "";
+        if (data.reasons && data.reasons.length) {
+            data.reasons.forEach(r => {
+                const li = document.createElement("li");
+                li.className = "risk-signal";
+                if (r.includes("phishing") || r.includes("Unreachable") || r.includes("IP address") || r.includes("HTTPS")) {
+                    li.classList.add("high-risk");
+                }
+                li.textContent = escapeHtml(r);
+                riskList.appendChild(li);
+            });
+            // Show red if high risk, we could toggle summary color here
+        } else {
+            riskList.innerHTML = "<li>No specific risk signals detected.</li>";
+        }
+
+        // Technical
+        const tech = deep.technical || {};
+        let techHtml = `<ul>`;
+        techHtml += `<li>HTTPS: ${tech.ssl_valid ? "✓" : "✗"}</li>`;
+        techHtml += `<li>Status Code: ${escapeHtml(data.status_code)}</li>`;
+        techHtml += `<li>Redirects: ${Math.max(0, (data.redirect_chain || []).length - 1)}</li>`;
+        techHtml += `<li>Server: ${escapeHtml(tech.server)}</li>`;
+        techHtml += `<li>Page Size: ${escapeHtml(tech.page_size_kb)} KB</li>`;
+        techHtml += `<li>External Scripts: ${escapeHtml(tech.external_scripts)}</li>`;
+        techHtml += `<li>Iframes: ${escapeHtml(tech.iframes)}</li>`;
+        techHtml += `<li>Forms / Password Fields: ${escapeHtml(tech.forms)} / ${escapeHtml(tech.password_fields)}</li>`;
+        techHtml += `<li>Favicon: ${tech.has_favicon ? "✓" : "✗"}</li>`;
+        techHtml += `<li>robots.txt: ${tech.has_robots_txt ? "✓" : "✗"}</li>`;
+        techHtml += `<li>sitemap.xml: ${tech.has_sitemap_xml ? "✓" : "✗"}</li>`;
+        techHtml += `</ul>`;
+        document.getElementById("technical-content").innerHTML = techHtml;
+
+        // Domain
+        let domainHtml = `<ul>`;
+        let ageStr = deep.domain_age_days;
+        if (ageStr > 365) {
+            ageStr = `${Math.floor(ageStr/365)} years, ${Math.floor((ageStr%365)/30)} months`;
+        } else if (ageStr < 30) {
+            ageStr = `${ageStr} days old — VERY NEW`;
+        } else {
+            ageStr = `${ageStr} days`;
+        }
+        domainHtml += `<li>Domain Age: ${ageStr}</li>`;
+        domainHtml += `<li>Registrar: ${escapeHtml(deep.registrar)}</li>`;
+        domainHtml += `</ul>`;
+        document.getElementById("domain-content").innerHTML = domainHtml;
+
+        // Feedback
+        document.getElementById("feedback-form").classList.add("hidden");
+        document.getElementById("feedback-thanks").classList.add("hidden");
+        document.querySelector(".feedback-buttons").classList.remove("hidden");
+        document.getElementById("feedback-yes").dataset.id = data.analysis_id;
+        document.getElementById("feedback-no").dataset.id = data.analysis_id;
+
+        // Scroll to result
+        resultSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
+
+        saveToSessionStorage(data);
+        updateRecentScansTable();
     }
-  }
 
-  // Batch
-  const batchForm = document.getElementById('admin-batch-form');
-  const batchError = document.getElementById('batch-error');
-  if (batchForm) {
-    batchForm.addEventListener('submit', async (e) => {
-      e.preventDefault();
-      batchError.classList.add('hidden');
-      const formData = new FormData(batchForm);
-      try {
-        const res = await fetch('/api/admin/bulk-upload', {
-          method: 'POST',
-          headers: { 'X-CSRFToken': window._csrfToken },
-          body: formData
-        });
-        if (!res.ok) throw new Error('Batch upload failed');
-
-        const blob = await res.blob();
-        const url = window.URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = 'batch-analysis-results.csv';
-        document.body.appendChild(a);
-        a.click();
-        a.remove();
-        viewAdmin(); // reload dashboard
-      } catch (err) {
-        batchError.textContent = err.message;
-        batchError.classList.remove('hidden');
-      }
-    });
-  }
-
-  // Blacklist
-  const blTable = document.getElementById('admin-blacklist-content');
-  if (blTable) {
-    blTable.innerHTML = data.blacklist.length ? data.blacklist.map(b => `
-      <tr>
-        <td>${escapeHtml(b.domain)}</td>
-        <td>${escapeHtml(b.reason || '-')}</td>
-        <td>
-          <button class="button button-danger" onclick="deleteBlacklist(${b.id})">Remove</button>
-        </td>
-      </tr>
-    `).join('') : '<tr><td colspan="3">No blacklisted domains.</td></tr>';
-  }
-
-  const blForm = document.getElementById('admin-blacklist-form');
-  if (blForm) {
-    blForm.addEventListener('submit', async (e) => {
-      e.preventDefault();
-      const fd = new FormData(blForm);
-      try {
-        await fetch('/api/admin/blacklist', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'X-CSRFToken': window._csrfToken },
-          body: JSON.stringify({ domain: fd.get('domain'), reason: fd.get('reason') })
-        });
-        viewAdmin(); // reload
-      } catch (err) {
-        flashMessage(err.message);
-      }
-    });
-  }
-
-  // Reports
-  const repTable = document.getElementById('admin-reports-content');
-  if (repTable) {
-    repTable.innerHTML = data.reports.length ? data.reports.map(r => `
-      <tr>
-        <td>${escapeHtml(r.created_at)}</td>
-        <td>${escapeHtml(r.domain)}</td>
-        <td>${escapeHtml(r.risk_score)}</td>
-        <td><span class="pill pill-${safeLabel(r.label)}">${escapeHtml(r.label)}</span></td>
-      </tr>
-    `).join('') : '<tr><td colspan="4">No recent reports.</td></tr>';
-  }
-}
-
-window.deleteBlacklist = async function(id) {
-  if (confirm('Are you sure you want to remove this domain from the blacklist?')) {
-    await fetch(`/api/admin/blacklist/${id}/delete`, {
-      method: 'POST',
-      headers: { 'X-CSRFToken': window._csrfToken }
-    });
-    viewAdmin();
-  }
-};
-
-
-
-async function fetchCsrfToken() {
-  try {
-    const res = await fetch('/api/csrf-token');
-    const data = await res.json();
-    window._csrfToken = data.csrf_token;
-  } catch (e) {
-    console.error('Failed to fetch CSRF token', e);
-  }
-}
-
-// Initialization
-
-async function init() {
-  console.log("App init running");
-  await fetchCsrfToken();
-  setupThemeToggle();
-  registerServiceWorker();
-
-  // Global delegated click listener for internal navigation
-  document.body.addEventListener('click', (e) => {
-    const link = e.target.closest('a');
-    if (link && link.hostname === window.location.hostname && link.getAttribute('href')?.startsWith('/') && !link.hasAttribute('data-external')) {
-      e.preventDefault();
-      const href = link.getAttribute('href');
-      if (window.location.pathname !== href) {
-        window.history.pushState({}, '', href);
-        router();
-      }
+    function saveToSessionStorage(data) {
+        let results = JSON.parse(sessionStorage.getItem("detector-results") || "[]");
+        // Remove existing if same URL
+        results = results.filter(r => r.url !== data.url);
+        results.unshift(data);
+        if (results.length > 20) results.pop();
+        sessionStorage.setItem("detector-results", JSON.stringify(results));
     }
-  });
 
-  window.addEventListener('popstate', router);
-  router(); // Initial route
-}
+    function updateRecentScansTable() {
+        // Initial load could use server side rendered, but we update with session storage on new scan
+        const results = JSON.parse(sessionStorage.getItem("detector-results") || "[]");
+        if (results.length === 0) return;
 
-if (document.readyState === 'loading') {
-  document.addEventListener('DOMContentLoaded', init);
-} else {
-  init();
-}
+        recentScansList.innerHTML = "";
+        results.forEach(row => {
+            const tr = document.createElement("tr");
+            tr.dataset.url = row.url;
+            tr.innerHTML = `
+                <td>${escapeHtml(row.domain)}</td>
+                <td><span class="pill pill-${row.label}">${row.label.toUpperCase()}</span></td>
+                <td>${row.risk_score}</td>
+                <td>Just now</td>
+            `;
+            tr.addEventListener("click", () => {
+                urlInput.value = row.url;
+                renderResult(row);
+            });
+            recentScansList.appendChild(tr);
+        });
+    }
+
+    form.addEventListener("submit", async (e) => {
+        e.preventDefault();
+        const url = urlInput.value.trim();
+        if (!url) return;
+
+        errorBox.classList.add("hidden");
+        resultSection.classList.add("hidden");
+        loadingState.classList.remove("hidden");
+        analyzeBtn.textContent = "Analyzing...";
+        analyzeBtn.disabled = true;
+
+        try {
+            const res = await fetch("/api/analyze", {
+                method: "POST",
+                headers: { "Content-Type": "application/json", "X-CSRFToken": document.querySelector("input[name=\x27csrf_token\x27]").value },
+                headers: { "Content-Type": "application/json", "X-CSRFToken": document.querySelector("input[name=\x27csrf_token\x27]").value }, body: JSON.stringify({ url })
+            });
+            const data = await res.json();
+            if (!res.ok) {
+                throw new Error((data.error && data.error.message) || "Analysis failed");
+            }
+            renderResult(data);
+        } catch (err) {
+            loadingState.classList.add("hidden");
+            errorBox.textContent = err.message;
+            errorBox.classList.remove("hidden");
+        } finally {
+            analyzeBtn.textContent = "Analyze";
+            analyzeBtn.disabled = false;
+        }
+    });
+
+    // Handle feedback
+    document.getElementById("feedback-yes").addEventListener("click", () => handleFeedback("satisfied"));
+    document.getElementById("feedback-no").addEventListener("click", () => {
+        document.querySelector(".feedback-buttons").classList.add("hidden");
+        document.getElementById("feedback-form").classList.remove("hidden");
+    });
+
+    document.getElementById("feedback-submit").addEventListener("click", () => {
+        const note = document.getElementById("feedback-note").value;
+        handleFeedback("not_satisfied", note);
+    });
+
+    async function handleFeedback(verdict, note = "") {
+        const analysis_id = document.getElementById("feedback-yes").dataset.id;
+        try {
+            await fetch("/api/feedback", {
+                method: "POST",
+                headers: { "Content-Type": "application/json", "X-CSRFToken": document.querySelector("input[name=\x27csrf_token\x27]").value },
+                body: JSON.stringify({ analysis_id, verdict, note })
+            });
+            document.querySelector(".feedback-buttons").classList.add("hidden");
+            document.getElementById("feedback-form").classList.add("hidden");
+            document.getElementById("feedback-thanks").classList.remove("hidden");
+        } catch (err) {
+            console.error("Feedback error", err);
+        }
+    }
+
+    // Attach click to existing server-rendered rows
+    document.querySelectorAll("#recent-scans-list tr").forEach(tr => {
+        tr.addEventListener("click", () => {
+            const url = tr.dataset.url;
+            urlInput.value = url;
+            // Fetch result from API if not in session storage
+            const results = JSON.parse(sessionStorage.getItem("detector-results") || "[]");
+            const cached = results.find(r => r.url === url);
+            if (cached) {
+                renderResult(cached);
+            } else {
+                form.dispatchEvent(new Event("submit"));
+            }
+        });
+    });
+
+    // PWA Install
+    let deferredPrompt;
+    const installBtn = document.getElementById("install-pwa");
+    window.addEventListener('beforeinstallprompt', (e) => {
+        e.preventDefault();
+        deferredPrompt = e;
+        installBtn.classList.remove("hidden");
+    });
+
+    installBtn.addEventListener("click", async () => {
+        if (deferredPrompt !== null) {
+            deferredPrompt.prompt();
+            const { outcome } = await deferredPrompt.userChoice;
+            if (outcome === 'accepted') {
+                installBtn.classList.add("hidden");
+            }
+            deferredPrompt = null;
+        }
+    });
+
+    // Service Worker
+    if ('serviceWorker' in navigator) {
+        window.addEventListener('load', () => {
+            navigator.serviceWorker.register('/sw.js').catch(err => {
+                console.log('SW registration failed: ', err);
+            });
+        });
+    }
+});

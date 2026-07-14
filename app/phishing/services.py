@@ -471,18 +471,24 @@ def score_analysis(features: dict[str, float], page_signals: dict[str, float], r
     binary_response = page_signals.get("binary_response", 0)
 
     # Apply compound risks (TLD + Young Age + Brand Impersonation)
-    if domain_age > 0 and domain_age < config.get("DOMAIN_AGE_MODERATE_RISK_DAYS", 365):
-        if features.get("brand_impersonation", 0):
-            score += 25
-            reasons.append("High risk compound: Domain contains a brand name and is newly registered")
+    brand_impersonation = features.get("brand_impersonation", 0)
+    suspicious_tld = features.get("phishing_tld", 0)
 
-            if features.get("phishing_tld", 0):
-                score += 15
-                reasons.append("Critical risk compound: Domain contains a brand name, is newly registered, and uses a suspicious TLD")
+    if brand_impersonation:
+        score += 25  # Brand impersonation is highly suspicious regardless of age
+        reasons.append("High risk: Domain contains a known brand name but uses suspicious structure")
 
-        elif features.get("phishing_tld", 0):
+        if suspicious_tld:
             score += 15
-            reasons.append("High risk compound: Suspicious TLD combined with recently registered domain")
+            reasons.append("Critical risk compound: Domain impersonates a brand AND uses a suspicious TLD")
+
+        if domain_age >= 0 and domain_age < config.get("DOMAIN_AGE_MODERATE_RISK_DAYS", 365):
+            score += 10
+            reasons.append("High risk compound: Brand impersonation combined with recently registered domain")
+
+    elif suspicious_tld and domain_age >= 0 and domain_age < config.get("DOMAIN_AGE_MODERATE_RISK_DAYS", 365):
+        score += 15
+        reasons.append("High risk compound: Suspicious TLD combined with recently registered domain")
 
     if page_fetched and not bot_blocked and not binary_response:
         if page_signals.get("has_password_field", 0) and not features.get("uses_https", 1):

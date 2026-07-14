@@ -75,20 +75,30 @@
   </article>
 </section>
 
-{% if data.features_summary and data.features_summary.page_signals and data.features_summary.page_signals.vt_summary and data.features_summary.page_signals.vt_summary.status == 'success' %}
 <section class="card">
   <h2>VirusTotal Enrichment</h2>
-  <div class="key-value">
+  {% if data.features_summary and data.features_summary.page_signals and data.features_summary.page_signals.vt_summary %}
     {% set vt = data.features_summary.page_signals.vt_summary %}
-    <div><span>Malicious</span><span class="score-phishing">{{ vt.malicious_count }}</span></div>
-    <div><span>Suspicious</span><span class="score-suspicious">{{ vt.suspicious_count }}</span></div>
-    <div><span>Harmless / Undetected</span><span class="score-safe">{{ vt.harmless_count }} / {{ vt.undetected_count }}</span></div>
-    {% if vt.permalink %}
-    <div><span>Report</span><span><a href="{{ vt.permalink }}" target="_blank" rel="noopener noreferrer">View on VirusTotal</a></span></div>
+    {% if vt.status == 'success' %}
+      <div class="key-value">
+        <div><span>Malicious</span><span class="score-phishing">{{ vt.malicious_count }}</span></div>
+        <div><span>Suspicious</span><span class="score-suspicious">{{ vt.suspicious_count }}</span></div>
+        <div><span>Harmless / Undetected</span><span class="score-safe">{{ vt.harmless_count }} / {{ vt.undetected_count }}</span></div>
+        {% if vt.permalink %}
+        <div><span>Report</span><span><a href="{{ vt.permalink }}" target="_blank" rel="noopener noreferrer">View on VirusTotal</a></span></div>
+        {% endif %}
+      </div>
+    {% elif vt.status == 'not_found' %}
+      <p class="muted">URL not found in VirusTotal database. (No prior scans)</p>
+    {% elif vt.status == 'rate_limited' %}
+      <p class="muted">VirusTotal rate limit exceeded during this scan.</p>
+    {% else %}
+      <p class="muted">VirusTotal lookup failed ({{ vt.message }}).</p>
     {% endif %}
-  </div>
+  {% else %}
+    <p class="muted">VirusTotal enrichment not available or not enabled.</p>
+  {% endif %}
 </section>
-{% endif %}
 
 {% if data.ai_analysis and data.ai_analysis.available %}
 <section class="card">

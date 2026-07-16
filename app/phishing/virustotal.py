@@ -338,8 +338,7 @@ def get_virustotal_report(url: str, config: dict[str, Any]) -> dict[str, Any] | 
                         curated_headers[hk] = hv
                     break
 
-        summary = {
-            "status": "success",
+        url_report = {
             "stats": {
                 "malicious_count": malicious,
                 "suspicious_count": suspicious,
@@ -360,7 +359,7 @@ def get_virustotal_report(url: str, config: dict[str, Any]) -> dict[str, Any] | 
                 "last_analysis_date": _ts_to_iso(attributes.get("last_analysis_date")),
             },
             "final_url": attributes.get("last_final_url"),
-            "redirection_chain": redirection_chain[:10], # cap just in case
+            "redirection_chain": redirection_chain[:10],
             "http_response": {
                 "status_code": attributes.get("last_http_response_code"),
                 "content_length": attributes.get("last_http_response_content_length"),
@@ -369,7 +368,7 @@ def get_virustotal_report(url: str, config: dict[str, Any]) -> dict[str, Any] | 
             },
             "top_engine_hits": top_engines,
             "additional_flagged_engines": additional_engines,
-            "tags": attributes.get("tags", []),
+            "tags": attributes.get("tags", [])[:20],
             "html_info": {
                 "title": attributes.get("html_info", {}).get("title"),
                 "meta": _curate_meta(attributes.get("html_info", {}).get("meta", {})),
@@ -381,14 +380,22 @@ def get_virustotal_report(url: str, config: dict[str, Any]) -> dict[str, Any] | 
             "jarm": jarm,
             "category_vendors": category_vendors,
             "permalink": f"https://www.virustotal.com/gui/url/{url_id}",
-            # Rich verdict for UI (replaces coarse 'Clean'/'Flagged')
+        }
+
+        summary = {
+            "status": "success",
+            "available": True,
+            "url_report": url_report,
+            "domain_report": None,
+            "ip_report": None,
             "verdict": _build_verdict_label({
                 "stats": {"malicious_count": malicious, "suspicious_count": suspicious},
                 "categories": unique_categories,
                 "reputation": attributes.get("reputation", 0),
             }),
-            # Keep flat stats for backward compatibility with existing code during transition,
-            # will remove in score_analysis refactor if needed.
+            "fetched_at": time.time(),
+            # Also keep flat fields temporarily for backward-compat
+            **url_report,
             "malicious_count": malicious,
             "suspicious_count": suspicious,
         }
@@ -397,6 +404,70 @@ def get_virustotal_report(url: str, config: dict[str, Any]) -> dict[str, Any] | 
             f"[VT] Report retrieved: {malicious} malicious, {suspicious} suspicious, "
             f"{harmless} harmless, {undetected} undetected (out of {total} engines)"
         )
+
+        # Optionally fetch domain report
+        if domain:
+            try:
+                time.sleep(1) # Be gentle on API quota
+                domain_resp = requests.get(
+                    f"https://www.virustotal.com/api/v3/domains/{domain}",
+                    headers=headers_get,
+                    timeout=timeout,
+                )
+                if domain_resp.status_code == 200:
+                    d_data = domain_resp.json().get("data", {}).get("attributes", {})
+                    d_stats = d_data.get("last_analysis_stats", {})
+                    d_malicious = d_stats.get("malicious", 0)
+                    d_suspicious = d_stats.get("suspicious", 0)
+
+                    summary["domain_report"] = {
+                        "reputation": d_data.get("reputation", 0),
+                        "categories": list(set(d_data.get("categories", {}).values())),
+                        "total_votes": d_data.get("total_votes", {}),
+                        "stats": d_stats,
+                        "creation_date": _ts_to_iso(d_data.get("creation_date")),
+                        "whois_date": _ts_to_iso(d_data.get("whois_date")),
+                        "last_dns_records_date": _ts_to_iso(d_data.get("last_dns_records_date")),
+                        "registrar": d_data.get("registrar"),
+                        "tags": d_data.get("tags", [])[:20],
+                        "popular_threat_classification": d_data.get("popular_threat_classification", {}).get("popular_threat_category", []),
+                        "last_resolved_ips": [r.get("ip_address") for r in d_data.get("last_dns_records", []) if r.get("type") == "A"][:5]
+                    }
+            except Exception as e:
+                logger.warning(f"[VT] Domain report fetch failed: {e}")
+
+        # Optionally fetch IP report
+        # Prefer serving IP from URL report, fallback to passed IP
+        ip_to_check = serving_ip or ip
+        if ip_to_check:
+            try:
+                time.sleep(1)
+                ip_resp = requests.get(
+                    f"https://www.virustotal.com/api/v3/ip_addresses/{ip_to_check}",
+                    headers=headers_get,
+                    timeout=timeout,
+                )
+                if ip_resp.status_code == 200:
+                    i_data = ip_resp.json().get("data", {}).get("attributes", {})
+
+                    summary["ip_report"] = {
+                        "as_owner": i_data.get("as_owner"),
+                        "asn": i_data.get("asn"),
+                        "country": i_data.get("country"),
+                        "continent": i_data.get("continent"),
+                        "network": i_data.get("network"),
+                        "regional_registry": i_data.get("regional_internet_registry"),
+                        "reputation": i_data.get("reputation", 0),
+                        "total_votes": i_data.get("total_votes", {}),
+                        "stats": i_data.get("last_analysis_stats", {}),
+                        "tags": i_data.get("tags", [])[:20],
+                        "last_https_certificate_date": _ts_to_iso(i_data.get("last_https_certificate_date")),
+                        "cert_subject": i_data.get("last_https_certificate", {}).get("subject", {}),
+                        "cert_issuer": i_data.get("last_https_certificate", {}).get("issuer", {})
+                    }
+            except Exception as e:
+                logger.warning(f"[VT] IP report fetch failed: {e}")
+
         return summary
 
     except RequestException as e:

@@ -213,10 +213,11 @@
     {% endif %}
 
     {% if data.features_summary.domain_age_days is not none %}
-    {% set age_days = data.features_summary.domain_age_days | default(0) | int %}
+    {% set age_days_raw = data.features_summary.domain_age_days | default(0) %}
+    {% set age_days = age_days_raw | int if age_days_raw is number else (age_days_raw | float | int) %}
     {# Scale bar to 2 years (730 days) to represent established age zones #}
-    {% set age_percent = (age_days / 730) * 100 %}
-    {% set age_percent = 100 if age_percent > 100 else (0 if age_percent < 0 else age_percent) %}
+    {% set age_percent = ((age_days / 730.0) * 100) | round(2) %}
+    {% set age_percent = [age_percent, 100] | min if age_percent > 100 else ([age_percent, 0] | max if age_percent < 0 else age_percent) %}
 
     <div style="margin-bottom: 2rem; background: rgba(255,255,255,0.01); border: 1px solid var(--border); padding: 1rem; border-radius: 0.75rem;">
       <div style="display: flex; justify-content: space-between; align-items: center;">
@@ -226,7 +227,7 @@
         </span>
       </div>
       <div class="age-bar-container">
-        <div class="age-bar-marker" style="left: {{ age_percent }}%;"></div>
+        <div class="age-bar-marker" style="left: {{ age_percent }}%;" title="{{ age_days }} days"></div>
       </div>
       <div class="age-bar-labels">
         <span>0d</span>
@@ -235,7 +236,7 @@
         <span>2y+ (Established)</span>
       </div>
       <div style="font-size: 0.85em; color: var(--muted); margin-top: 0.5rem; display: flex; justify-content: space-between; flex-wrap: wrap; gap: 0.5rem;">
-        <span>Current: <strong>{{ age_days }} days</strong> (~{{ (age_days / 365) | round(1) }} years)</span>
+        <span>Current: <strong>{{ age_days }} days</strong> (~{{ (age_days / 365.0) | round(1) }} years)</span>
         <span>Bucket: <strong>{{ data.features_summary.domain_info.domain_age_bucket | default('unknown') }}</strong></span>
       </div>
     </div>

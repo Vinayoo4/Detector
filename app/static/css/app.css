@@ -219,7 +219,7 @@ details summary:hover { opacity: .8; }
   background: var(--text);
   border-radius: 3px;
   box-shadow: 0 0 6px rgba(0,0,0,0.6);
-  transition: left 0.3s ease;
+  transform: translateX(-50%);
   border: 1px solid var(--card);
 }
 .age-bar-labels {
